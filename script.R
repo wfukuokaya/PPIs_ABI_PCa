@@ -1,0 +1,311 @@
+# IPW-adjustment
+# calculate IPW
+# all --- PPI use within 30 days before and after randomization
+fit_wgt <- WeightIt::weightit(
+  PPI_WITHIN_BIN ~ AGE_CAT + PS + CAD + GI + VD + PSA_CUT + BPI_CAT + GG_CAT + EOD_CAT + VISCERAL + HGB_CUT + LDH_CUT + ARM + BMA_WITHIN + GC_WITHIN,
+  data = LATITUDE, method = "ps", estimand = "ATE")
+wgt <- fit_wgt[["weights"]]
+ps <- fit_wgt[["ps"]]
+LATITUDE <- tibble(LATITUDE, wgt)
+LATITUDE <- tibble(LATITUDE, ps)
+
+# propensity score and weight distributions
+library(ggplot2)
+library(ggsci)
+theme_set(theme_minimal() + theme(legend.position = "none"))
+
+# propensity score distributions
+psdist <- ggplot() + 
+  geom_density(data = filter(LATITUDE, PPI_WITHIN == "yes"),
+               aes(x = ps, weight = wgt, fill = PPI_WITHIN), alpha = 0.2) + 
+  geom_density(data = filter(LATITUDE, PPI_WITHIN == "no"),
+               aes(x = ps, weight = wgt, fill = PPI_WITHIN, y = -..density..), alpha = 0.2) + 
+  geom_density(data = filter(LATITUDE, PPI_WITHIN == "yes"),
+               aes(x = ps, fill = PPI_WITHIN), alpha = 0.6) + 
+  geom_density(data = filter(LATITUDE, PPI_WITHIN == "no"),
+               aes(x = ps, fill = PPI_WITHIN, y = -..density..), alpha = 0.6) +
+  geom_hline(yintercept = 0, color = "white", size = 0.25) + 
+  annotate(geom = "label", x = 0.2, y = 5, label = "PPI users\n(Pseudo-population)",
+           fill = "#EE0000FF", alpha = 0.3, color = "white", hjust = 0) +
+  annotate(geom = "label", x = 0.5, y = 2.5, label = "PPI users\n(actual)",
+           fill = "#EE0000FF", alpha = 0.6, color = "white", hjust = 0) +
+  annotate(geom = "label", x = 0.15, y = -5, label = "Non-users\n(Pseudo-population)",
+           fill = "#3B4992FF", alpha = 0.3, color = "white", hjust = 0) +
+  annotate(geom = "label", x = 0.3, y = -2.5, label = "Non-users\n(actual)",
+           fill = "#3B4992FF", alpha = 0.6, color = "white", hjust = 0) +
+  scale_fill_aaas() + 
+  scale_y_continuous(label = abs) + 
+  labs(x = "Propensity score", y = "Density")
+
+# weight distributions
+wgtdist <- ggplot() + 
+  geom_histogram(data = filter(LATITUDE, PPI_WITHIN == "yes"),
+                 bins = 30, aes(x = wgt, fill = PPI_WITHIN), alpha = 0.3) + 
+  geom_histogram(data = filter(LATITUDE, PPI_WITHIN == "no"),
+                 bins = 30, aes(x =  wgt, fill = PPI_WITHIN, y = -..count..), alpha = 0.3) + 
+  geom_hline(yintercept = 0, color = "white", size = 0.25) + 
+  annotate(geom = "label", x = 0.5, y = 0.1, label = "PPI users",
+           fill = "#EE0000FF", alpha = 0.3, color = "white", hjust = 0) +
+  annotate(geom = "label", x = 0.15, y = -1, label = "Non-users",
+           fill = "#3B4992FF", alpha = 0.3, color = "white", hjust = 0) +
+  scale_fill_aaas() + 
+  scale_y_continuous(label = abs) + 
+  labs(x = "Count", y = "Inverse probability weight")
+
+wgtdist <- LATITUDE %>%
+  ggplot() +
+  geom_histogram(aes(x = wgt, y = ..count..), fill = "#3B4992FF", stat = "bin", bins = 20) + 
+  labs(
+    x = "Weight", y = "Count",
+    title = "Distribution of weights (LATITUDE dataset)"
+  )
+
+# Patient characteristics --- PPI use within 30 days before and after randomization
+library(tableone)
+library(survey)
+fct_var <- c("AGE_CAT", "PS", "CAD", "GI", "VD", "PSA_CUT", "BPI_CAT", "GG_CAT", "EOD_CAT", "VISCERAL", "HGB_CUT", "LDH_CUT", "BMA_WITHIN", "GC_WITHIN", "ARM")
+all_var <- c("AGE_CAT", "PS", "CAD", "GI", "VD", "PSA_CUT", "BPI_CAT", "GG_CAT", "EOD_CAT", "VISCERAL", "HGB_CUT", "LDH_CUT", "BMA_WITHIN", "GC_WITHIN", "ARM")
+
+# table one
+tbl_base <- CreateTableOne(vars = all_var, factorVars = fct_var, strata = "PPI_WITHIN", data = LATITUDE, test = FALSE)
+tbl <- print(tbl_base, catDigits = 1, contDigits = 1, explain = TRUE, varLabels = TRUE, noSpaces = TRUE, 
+             showAllLevels = TRUE, smd = TRUE)
+
+svyLATITUDE <- svydesign(ids = ~ USUBJID, weights = ~ wgt, data = LATITUDE)
+wtbl_base <- svyCreateTableOne(vars = all_var, factorVars = fct_var, strata = "PPI_WITHIN", data = svyLATITUDE, test = FALSE)
+wtbl <- print(wtbl_base, catDigits = 1, contDigits = 1, explain = TRUE, varLabels = TRUE, noSpaces = TRUE, 
+              showAllLevels = TRUE, smd = TRUE)
+
+# kaplan-meier estimations
+pfs_fit <- survfit(Surv(TTPROG, PROG_BIN) ~ PPI_WITHIN, data = LATITUDE, weights = wgt)
+pfs_plot_mcspc <- ggsurvplot(pfs_fit, 
+                             risk.table = FALSE, font.tickslab = 12, font.x = 12, font.y = 12,
+                             title = "Radiographic progression-free survival",
+                             legend = "top", legend.labs = c("no", "yes"),
+                             legend.title = "PPI use", 
+                             censor = FALSE, 
+                             xlab = "Time from randomization, days",
+                             ylab = "Patients without radiographic progression or death",
+                             palette = "aaas", size = 0.6,
+                             ggtheme = theme_classic())
+
+ttsre_fit <- survfit(Surv(TTSRE, SRE_BIN) ~ PPI_WITHIN, data = LATITUDE, weights = wgt)
+ttsre_plot_mcspc <- ggsurvplot(ttsre_fit, 
+                               risk.table = FALSE, font.tickslab = 12, font.x = 12, font.y = 12,
+                               title = "Time to skeletal-related event",
+                               legend = "top", legend.labs = c("no", "yes"),
+                               legend.title = "PPI use", 
+                               censor = FALSE, 
+                               xlab = "Time from randomization, days",
+                               ylab = "Patients without skeletal related events",
+                               palette = "aaas", size = 0.6,
+                               ggtheme = theme_classic())
+
+os_fit <- survfit(Surv(FOLLOWUP, DEATH_BIN) ~ PPI_WITHIN, data = LATITUDE, weights = wgt)
+os_plot_mcspc <- ggsurvplot(os_fit, 
+                            risk.table = FALSE, font.tickslab = 12, font.x = 12, font.y = 12,
+                            title = "Overall survival",
+                            legend = "top", legend.labs = c("no", "yes"),
+                            legend.title = "PPI use",
+                            censor = FALSE, 
+                            xlab = "Time from randomization, days",
+                            ylab = "Patients who survived",
+                            palette = "aaas", size = 0.6,
+                            ggtheme = theme_classic())
+
+subanalysis <- arrange_ggsurvplots(list(pfs_plot_mcspc, ttsre_plot_mcspc, os_plot_mcspc), 
+                                   title = "IPW-adjusted Kaplan-Meier analysis according to PPI use: LATITUDE dataset",
+                                   nrow = 1, ncol = 3, print = FALSE)
+
+# weighted log-rank test
+# progression-free survival
+pfs_cox <- coxph(Surv(TTPROG, PROG_BIN) ~ PPI_WITHIN, data = LATITUDE, weights = wgt)
+pfs_pval <- round(summary(pfs_cox)$sctest[3], digits = 6)
+
+# Time to skeletal events
+ttsre_cox <- coxph(Surv(TTSRE, SRE_BIN) ~ PPI_WITHIN, data = LATITUDE, weights = wgt)
+ttsre_pval <- round(summary(ttsre_cox)$sctest[3], digits = 10)
+
+# Overall survival
+os_cox <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ PPI_WITHIN, data = LATITUDE, weights = wgt)
+os_pval <- round(summary(os_cox)$sctest[3], digits = 10)
+
+pfs_pval
+ttsre_pval
+os_pval
+
+# all data
+merge <- arrange_ggsurvplots(list(pfs_plot_mcspc, pfs_plot_crpc, os_plot_mcspc, os_plot_crpc), 
+                             title = "Kaplan-Meier analysis according to PPI use",
+                             nrow = 2, ncol = 2, print = FALSE)
+
+# interaction analysis within Cox regression model
+# OS
+library(finalfit)
+
+# interaction analysis for PFS
+int_pfs_age <- coxph(Surv(TTPROG, PROG_BIN) ~ AGE_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_ps <- coxph(Surv(TTPROG, PROG_BIN) ~ PS * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_cad <- coxph(Surv(TTPROG, PROG_BIN) ~ CAD * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_gi <- coxph(Surv(TTPROG, PROG_BIN) ~ GI * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_vd <- coxph(Surv(TTPROG, PROG_BIN) ~ VD * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_psa <- coxph(Surv(TTPROG, PROG_BIN) ~ PSA_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_bpi <- coxph(Surv(TTPROG, PROG_BIN) ~ BPI_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_gg <- coxph(Surv(TTPROG, PROG_BIN) ~ GG_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_eod <- coxph(Surv(TTPROG, PROG_BIN) ~ EOD_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_vis <- coxph(Surv(TTPROG, PROG_BIN) ~ VISCERAL * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_hgb <- coxph(Surv(TTPROG, PROG_BIN) ~ HGB_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_ldh <- coxph(Surv(TTPROG, PROG_BIN) ~ LDH_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_bma <- coxph(Surv(TTPROG, PROG_BIN) ~ BMA_WITHIN * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_gc <- coxph(Surv(TTPROG, PROG_BIN) ~ GC_WITHIN * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_pfs_arm <- coxph(Surv(TTPROG, PROG_BIN) ~ ARM * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+
+int_pfs_sum <- bind_rows(int_pfs_age, int_pfs_ps, int_pfs_cad, int_pfs_gi, int_pfs_vd,
+                         int_pfs_psa, int_pfs_bpi, int_pfs_gg, int_pfs_eod, int_pfs_vis,
+                         int_pfs_hgb, int_pfs_ldh, int_pfs_bma, int_pfs_gc, int_pfs_arm)
+
+# interaction analysis for TTSRE
+int_sre_age <- coxph(Surv(TTSRE, SRE_BIN) ~ AGE_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_ps <- coxph(Surv(TTSRE, SRE_BIN) ~ PS * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_cad <- coxph(Surv(TTSRE, SRE_BIN) ~ CAD * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_gi <- coxph(Surv(TTSRE, SRE_BIN) ~ GI * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_vd <- coxph(Surv(TTSRE, SRE_BIN) ~ VD * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_psa <- coxph(Surv(TTSRE, SRE_BIN) ~ PSA_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_bpi <- coxph(Surv(TTSRE, SRE_BIN) ~ BPI_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+# int_sre_gg <- coxph(Surv(TTSRE, SRE_BIN) ~ GG_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df() PPI users with GG4-5 are extremely little
+int_sre_eod <- coxph(Surv(TTSRE, SRE_BIN) ~ EOD_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_vis <- coxph(Surv(TTSRE, SRE_BIN) ~ VISCERAL * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_hgb <- coxph(Surv(TTSRE, SRE_BIN) ~ HGB_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_ldh <- coxph(Surv(TTSRE, SRE_BIN) ~ LDH_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_bma <- coxph(Surv(TTSRE, SRE_BIN) ~ BMA_WITHIN * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_gc <- coxph(Surv(TTSRE, SRE_BIN) ~ GC_WITHIN * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_sre_arm <- coxph(Surv(TTSRE, SRE_BIN) ~ ARM * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+
+int_sre_sum <- bind_rows(int_sre_age, int_sre_ps, int_sre_cad, int_sre_gi, int_sre_vd,
+                         int_sre_psa, int_sre_bpi, int_sre_eod, int_sre_vis,
+                         int_sre_hgb, int_sre_ldh, int_sre_bma, int_sre_gc, int_sre_arm)
+
+# interaction analysis for OS
+int_os_age <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ AGE_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_ps <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ PS * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_cad <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ CAD * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_gi <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ GI * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_vd <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ VD * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_psa <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ PSA_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_bpi <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ BPI_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_gg <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ GG_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_eod <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ EOD_CAT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_vis <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ VISCERAL * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_hgb <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ HGB_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_ldh <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ LDH_CUT * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_bma <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ BMA_WITHIN * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_gc <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ GC_WITHIN * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+int_os_arm <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ ARM * PPI_WITHIN, data = LATITUDE, weights = wgt) %>% fit2df()
+
+int_os_sum <- bind_rows(int_os_age, int_os_ps, int_os_cad, int_os_gi, int_os_vd,
+                        int_os_psa, int_os_bpi, int_os_gg, int_os_eod, int_os_vis,
+                        int_os_hgb, int_os_ldh, int_os_bma, int_os_gc, int_os_arm)
+
+# Additional analysis --------------------
+# IPW-adjustment
+# calculate IPW
+# all --- H2-receptor antagonist use within 30 days before and after randomization
+fit_wgt <- WeightIt::weightit(
+  H2B_WITHIN_BIN ~ AGE_CAT + PS + CAD + GI + VD + PSA_CUT + BPI_CAT + GG_CAT + BONE + VISCERAL + HGB_CUT + LDH_CUT + ARM + BMA_WITHIN + GC_WITHIN,
+  data = LATITUDE, method = "cbps", estimand = "ATE")
+wgt <- fit_wgt[["weights"]]
+LATITUDE <- tibble(LATITUDE, wgt)
+
+# Patient characteristics --- H2-receptor antagonist use within 30 days before and after randomization
+library(tableone)
+library(survey)
+fct_var <- c("AGE_CAT", "PS", "CAD", "GI", "VD", "PSA_CUT", "BPI_CAT", "GG_CAT", "BONE", "VISCERAL", "HGB_CUT", "LDH_CUT", "BMA_WITHIN", "GC_WITHIN", "ARM")
+all_var <- c("AGE_CAT", "PS", "CAD", "GI", "VD", "PSA_CUT", "BPI_CAT", "GG_CAT", "BONE", "VISCERAL", "HGB_CUT", "LDH_CUT", "BMA_WITHIN", "GC_WITHIN", "ARM")
+
+# all
+tbl_base <- CreateTableOne(vars = all_var, factorVars = fct_var, strata = "H2B_WITHIN", data = LATITUDE, test = FALSE)
+tbl <- print(tbl_base, catDigits = 1, contDigits = 1, explain = TRUE, varLabels = TRUE, noSpaces = TRUE, 
+             showAllLevels = TRUE, smd = TRUE)
+
+svyLATITUDE <- svydesign(ids = ~ USUBJID, weights = ~ wgt, data = LATITUDE)
+wtbl_base <- svyCreateTableOne(vars = all_var, factorVars = fct_var, strata = "H2B_WITHIN", data = svyLATITUDE, test = FALSE)
+wtbl <- print(wtbl_base, catDigits = 1, contDigits = 1, explain = TRUE, varLabels = TRUE, noSpaces = TRUE, 
+              showAllLevels = TRUE, smd = TRUE)
+
+# Additional analysis --------------------
+# according to PPI use during therapy
+# all --- PPI use after 30 days of randomization
+fit_wgt <- WeightIt::weightit(
+  PPI_DURING_BIN ~ AGE_CAT + PS + CAD + GI + VD + PSA_CUT + BPI_CAT + GG_CAT + EOD_CAT + VISCERAL + HGB_CUT + LDH_CUT + ARM + BMA_WITHIN + GC_WITHIN,
+  data = LATITUDE, method = "ps", estimand = "ATE")
+wgt <- fit_wgt[["weights"]]
+ps <- fit_wgt[["ps"]]
+LATITUDE <- tibble(LATITUDE, wgt)
+LATITUDE <- tibble(LATITUDE, ps)
+
+fct_var <- c("AGE_CAT", "PS", "CAD", "GI", "VD", "PSA_CUT", "BPI_CAT", "GG_CAT", "EOD_CAT", "VISCERAL", "HGB_CUT", "LDH_CUT", "BMA_WITHIN", "GC_WITHIN", "ARM")
+all_var <- c("AGE_CAT", "PS", "CAD", "GI", "VD", "PSA_CUT", "BPI_CAT", "GG_CAT", "EOD_CAT", "VISCERAL", "HGB_CUT", "LDH_CUT", "BMA_WITHIN", "GC_WITHIN", "ARM")
+
+# table one
+tbl_base <- CreateTableOne(vars = all_var, factorVars = fct_var, strata = "PPI_DURING", data = LATITUDE, test = FALSE)
+tbl <- print(tbl_base, catDigits = 1, contDigits = 1, explain = TRUE, varLabels = TRUE, noSpaces = TRUE, 
+             showAllLevels = TRUE, smd = TRUE)
+
+svyLATITUDE <- svydesign(ids = ~ USUBJID, weights = ~ wgt, data = LATITUDE)
+wtbl_base <- svyCreateTableOne(vars = all_var, factorVars = fct_var, strata = "PPI_DURING", data = svyLATITUDE, test = FALSE)
+wtbl <- print(wtbl_base, catDigits = 1, contDigits = 1, explain = TRUE, varLabels = TRUE, noSpaces = TRUE, 
+              showAllLevels = TRUE, smd = TRUE)
+
+# kaplan-meier estimations
+pfs_fit <- survfit(Surv(TTPROG, PROG_BIN) ~ PPI_DURING, data = LATITUDE, weights = wgt)
+pfs_plot_mcspc <- ggsurvplot(pfs_fit, 
+                             risk.table = FALSE, font.tickslab = 12, font.x = 12, font.y = 12,
+                             title = "Radiographic progression-free survival",
+                             legend = "top", legend.labs = c("no", "yes"),
+                             legend.title = "PPI use", 
+                             censor = FALSE, 
+                             xlab = "Time from randomization, days",
+                             ylab = "Patients without radiographic progression or death",
+                             palette = "aaas", size = 0.6,
+                             ggtheme = theme_classic())
+
+ttsre_fit <- survfit(Surv(TTSRE, SRE_BIN) ~ PPI_DURING, data = LATITUDE, weights = wgt)
+ttsre_plot_mcspc <- ggsurvplot(ttsre_fit, 
+                               risk.table = FALSE, font.tickslab = 12, font.x = 12, font.y = 12,
+                               title = "Time to skeletal-related event",
+                               legend = "top", legend.labs = c("no", "yes"),
+                               legend.title = "PPI use", 
+                               censor = FALSE, 
+                               xlab = "Time from randomization, days",
+                               ylab = "Patients without skeletal related events",
+                               palette = "aaas", size = 0.6,
+                               ggtheme = theme_classic())
+
+os_fit <- survfit(Surv(FOLLOWUP, DEATH_BIN) ~ PPI_DURING, data = LATITUDE, weights = wgt)
+os_plot_mcspc <- ggsurvplot(os_fit, 
+                            risk.table = FALSE, font.tickslab = 12, font.x = 12, font.y = 12,
+                            title = "Overall survival",
+                            legend = "top", legend.labs = c("no", "yes"),
+                            legend.title = "PPI use",
+                            censor = FALSE, 
+                            xlab = "Time from randomization, days",
+                            ylab = "Patients who survived",
+                            palette = "aaas", size = 0.6,
+                            ggtheme = theme_classic())
+
+subanalysis <- arrange_ggsurvplots(list(pfs_plot_mcspc, ttsre_plot_mcspc, os_plot_mcspc), 
+                                   title = "IPW-adjusted Kaplan-Meier analysis according to PPI use: LATITUDE dataset",
+                                   nrow = 1, ncol = 3, print = FALSE)
+
+# weighted log-rank test
+# progression-free survival
+pfs_cox <- coxph(Surv(TTPROG, PROG_BIN) ~ PPI_DURING, data = LATITUDE, weights = wgt)
+pfs_pval <- round(summary(pfs_cox)$sctest[3], digits = 6)
+
+# Time to skeletal events
+ttsre_cox <- coxph(Surv(TTSRE, SRE_BIN) ~ PPI_DURING, data = LATITUDE, weights = wgt)
+ttsre_pval <- round(summary(ttsre_cox)$sctest[3], digits = 10)
+
+# Overall survival
+os_cox <- coxph(Surv(FOLLOWUP, DEATH_BIN) ~ PPI_DURING, data = LATITUDE, weights = wgt)
+os_pval <- round(summary(os_cox)$sctest[3], digits = 10)
